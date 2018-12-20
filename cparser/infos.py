@@ -517,9 +517,16 @@ class ClassInfo(object):
             m = FunctionInfo(cursor)
             m.set_attribute(FunctionAttributes.Destructor)
             self.methods.append(m)
-
-        # else:
-        # print >> sys.stderr, "unknown cursor: %s - %s" % (cursor.kind, cursor.displayname)
+        # objc desc
+        elif cursor.kind == cindex.CursorKind.OBJC_IVAR_DECL:
+            self.fields.append(FieldInfo(cursor))
+        elif cursor.kind == cindex.CursorKind.OBJC_INSTANCE_METHOD_DECL:
+            m = FunctionInfo(cursor)
+            self.methods.append(m)
+        elif cursor.kind == cindex.CursorKind.OBJC_PROPERTY_DECL:
+            print("do nothing OBJC_PROPERTY_DECL")
+        else:
+            print "unknown cursor: %s - %s" % (cursor.kind, cursor.displayname)
 
     @staticmethod
     def _is_method_in_parents(current_class, method_name):

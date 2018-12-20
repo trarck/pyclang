@@ -1,16 +1,14 @@
 #ifndef TEST_A_H
 #define TEST_A_H
 
-class B{
-    
-};
-
-typedef int BP;
 
 class C
 {
 public:
-    void funa();
+    void funa(int i,int j){
+        i=3;
+        j=4;
+    }
     int funb(){}
 };
 

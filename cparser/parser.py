@@ -3,8 +3,9 @@ import os
 from infos import *
 from clang import cindex
 
-clang_lib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),'../libclang')
+clang_lib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../libclang')
 cindex.Config.set_library_path(clang_lib_path)
+
 
 class Parser(object):
     def __init__(self, opts):
@@ -48,7 +49,7 @@ class Parser(object):
 
     @staticmethod
     def in_parse_file(cursor, parsing_file):
-        source_file=None
+        source_file = None
         if cursor.location and cursor.location.file:
             source_file = cursor.location.file.name
         elif cursor.extent and cursor.extent.start.file:
@@ -137,20 +138,24 @@ class Parser(object):
             # print("find DESTRUCTOR")
             method = FunctionInfo(cursor)
             self.methods.append(method)
+        elif cursor.kind == cindex.CursorKind.OBJC_INTERFACE_DECL:
+            print("find OBJC_INTERFACE_DECL")
+        elif cursor.kind == cindex.CursorKind.OBJC_IVAR_DECL:
+            print("find OBJC_IVAR_DECL")
+
         elif cursor.kind == cindex.CursorKind.OBJC_CATEGORY_DECL:
             print("find OBJC_CATEGORY_DECL")
             for sub_cursor in cursor.get_children():
                 self._traverse(sub_cursor)
         elif cursor.kind == cindex.CursorKind.OBJC_CLASS_REF:
             print("find OBJC_CLASS_REF")
-             
         elif cursor.kind == cindex.CursorKind.OBJC_IMPLEMENTATION_DECL:
             print("find OBJC_IMPLEMENTATION_DECL")
             for sub_cursor in cursor.get_children():
-                self._traverse(sub_cursor) 
+                self._traverse(sub_cursor)
         elif cursor.kind == cindex.CursorKind.OBJC_INSTANCE_METHOD_DECL:
-             method = FunctionInfo(cursor)
-             self.methods.append(method)
+            method = FunctionInfo(cursor)
+            self.methods.append(method)
         else:
             print("find %s" % cursor.kind)
 

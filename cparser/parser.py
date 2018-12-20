@@ -48,14 +48,18 @@ class Parser(object):
 
     @staticmethod
     def in_parse_file(cursor, parsing_file):
+        source_file=None
         if cursor.location and cursor.location.file:
             source_file = cursor.location.file.name
-        elif cursor.extent and cursor.extent.start:
+        elif cursor.extent and cursor.extent.start.file:
             source_file = cursor.extent.start.file.name
 
-        source_file = source_file.replace("\\", "/")
-        # print("%s=%s" % (source_file, parsing_file))
-        return source_file == parsing_file
+        if source_file:
+            source_file = source_file.replace("\\", "/")
+            print("%s=%s" % (source_file, parsing_file))
+            return source_file == parsing_file
+        else:
+            return True
 
     def _check_diagnostics(self, diagnostics):
         errors = []
@@ -133,8 +137,22 @@ class Parser(object):
             # print("find DESTRUCTOR")
             method = FunctionInfo(cursor)
             self.methods.append(method)
-        elif cursor.kind == cindex.CursorKind.OBJC_INTERFACE_DECL:
-            print("find objc define")
+        elif cursor.kind == cindex.CursorKind.OBJC_CATEGORY_DECL:
+            print("find OBJC_CATEGORY_DECL")
+            for sub_cursor in cursor.get_children():
+                self._traverse(sub_cursor)
+        elif cursor.kind == cindex.CursorKind.OBJC_CLASS_REF:
+            print("find OBJC_CLASS_REF")
+             
+        elif cursor.kind == cindex.CursorKind.OBJC_IMPLEMENTATION_DECL:
+            print("find OBJC_IMPLEMENTATION_DECL")
+            for sub_cursor in cursor.get_children():
+                self._traverse(sub_cursor) 
+        elif cursor.kind == cindex.CursorKind.OBJC_INSTANCE_METHOD_DECL:
+             method = FunctionInfo(cursor)
+             self.methods.append(method)
+        else:
+            print("find %s" % cursor.kind)
 
     def sorted_classes(self):
         """

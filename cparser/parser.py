@@ -3,6 +3,9 @@ import os
 from infos import *
 from clang import cindex
 
+clang_lib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),'../libclang')
+cindex.Config.set_library_path(clang_lib_path)
+
 class Parser(object):
     def __init__(self, opts):
         self.index = cindex.Index.create()

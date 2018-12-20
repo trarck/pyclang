@@ -70,7 +70,7 @@ def main():
         parser.error('invalid number arguments')
 
     index = cindex.Index.create()
-    tu = index.parse(None, args)
+    tu = index.parse(args[0], args[1:])
     if not tu:
         parser.error("unable to load input")
 

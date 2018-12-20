@@ -6,11 +6,8 @@
 
 from clang import cindex
 import sys
-import ConfigParser
 import re
 import os
-import inspect
-import traceback
 
 type_map = {
     cindex.TypeKind.VOID: "void",
@@ -236,95 +233,19 @@ def normalize_type_str(s, depth=1):
     return normalized_name
 
 
-class BaseEnumeration(object):
-    """
-    Common base class for named enumerations held in sync with Index.h values.
-
-    Subclasses must define their own _kinds and _name_map members, as:
-    _kinds = []
-    _name_map = None
-    These values hold the per-subclass instances and value-to-name mappings,
-    respectively.
-
-    """
-
-    def __init__(self, value):
-        if value >= len(self.__class__._kinds):
-            self.__class__._kinds += [None] * (value - len(self.__class__._kinds) + 1)
-        if self.__class__._kinds[value] is not None:
-            raise ValueError('{0} value {1} already loaded'.format(
-                str(self.__class__), value))
-        self.value = value
-        self.__class__._kinds[value] = self
-        self.__class__._name_map = None
-
-    def from_param(self):
-        return self.value
-
-    @property
-    def name(self):
-        """Get the enumeration name of this cursor kind."""
-        if self._name_map is None:
-            self._name_map = {}
-            for key, value in self.__class__.__dict__.items():
-                if isinstance(value, self.__class__):
-                    self._name_map[value] = key
-        return self._name_map[self]
-
-    @classmethod
-    def from_id(cls, id):
-        if id >= len(cls._kinds) or cls._kinds[id] is None:
-            raise ValueError('Unknown template argument kind %d' % id)
-        return cls._kinds[id]
-
-    def __repr__(self):
-        return '%s.%s' % (self.__class__, self.name,)
-
-
-### Availability Kinds ###
-
-class AvailabilityKind(BaseEnumeration):
-    """
-    Describes the availability of an entity.
-    """
-
-    # The unique kind objects, indexed by id.
-    _kinds = []
-    _name_map = None
-
-    def __repr__(self):
-        return 'AvailabilityKind.%s' % (self.name,)
-
-
-AvailabilityKind.AVAILABLE = AvailabilityKind(0)
-AvailabilityKind.DEPRECATED = AvailabilityKind(1)
-AvailabilityKind.NOT_AVAILABLE = AvailabilityKind(2)
-AvailabilityKind.NOT_ACCESSIBLE = AvailabilityKind(3)
-
-
-def get_availability(cursor):
-    """
-    Retrieves the availability of the entity pointed at by the cursor.
-    """
-    if not hasattr(cursor, '_availability'):
-        cursor._availability = cindex.conf.lib.clang_getCursorAvailability(cursor)
-
-    return AvailabilityKind.from_id(cursor._availability)
-
-
-def native_name_from_type(ntype, underlying=False):
-    kind = ntype.kind  # get_canonical().kind
+def native_name_from_type(type_cursor, underlying=False):
+    kind = type_cursor.kind  # get_canonical().kind
     const = ""  # "const " if ntype.is_const_qualified() else ""
     if not underlying and kind == cindex.TypeKind.ENUM:
-        decl = ntype.get_declaration()
-        return get_namespaced_name(decl)
+        decl = type_cursor.get_declaration()
+        return get_fullname(decl)
     elif kind in type_map:
         return const + type_map[kind]
     elif kind == cindex.TypeKind.RECORD:
         # might be an std::string
-        decl = ntype.get_declaration()
+        decl = type_cursor.get_declaration()
         parent = decl.semantic_parent
-        cdecl = ntype.get_canonical().get_declaration()
+        cdecl = type_cursor.get_canonical().get_declaration()
         cparent = cdecl.semantic_parent
         if decl.spelling == "string" and parent and parent.spelling == "std":
             return "std::string"
@@ -340,96 +261,105 @@ def native_name_from_type(ntype, underlying=False):
         # pdb.set_trace()
 
 
-def build_namespace(cursor, namespaces=[]):
+def build_fullname(cursor, namespaces=[]):
     """
     build the full namespace for a specific cursor
     """
     if cursor:
         parent = cursor.semantic_parent
-        if parent:
-            if parent.kind == cindex.CursorKind.NAMESPACE or parent.kind == cindex.CursorKind.CLASS_DECL:
-                namespaces.append(parent.displayname)
-                build_namespace(parent, namespaces)
+        while parent and (parent.kind == cindex.CursorKind.NAMESPACE or parent.kind == cindex.CursorKind.CLASS_DECL):
+            namespaces.append(parent.displayname)
+            parent = parent.semantic_parent
+
+        # if parent:
+        #     if parent.kind == cindex.CursorKind.NAMESPACE or parent.kind == cindex.CursorKind.CLASS_DECL:
+        #         namespaces.append(parent.displayname)
+        #         build_fullname(parent, namespaces)
 
     return namespaces
 
 
-def get_namespaced_name(declaration_cursor):
-    ns_list = build_namespace(declaration_cursor, [])
+def get_fullname(cursor):
+    ns_list = build_fullname(cursor, [])
     ns_list.reverse()
     ns = "::".join(ns_list)
-    display_name = declaration_cursor.displayname.replace("::__ndk1", "")
+    display_name = cursor.displayname.replace("::__ndk1", "")
     if len(ns) > 0:
         ns = ns.replace("::__ndk1", "")
         return ns + "::" + display_name
     return display_name
 
 
-def generate_namespace_list(cursor, namespaces=[]):
+def build_namespace_list(cursor, namespaces=[]):
     """
     build the full namespace for a specific cursor
     """
     if cursor:
         parent = cursor.semantic_parent
-        if parent:
-            if parent.kind == cindex.CursorKind.NAMESPACE or parent.kind == cindex.CursorKind.CLASS_DECL:
-                if parent.kind == cindex.CursorKind.NAMESPACE:
-                    namespaces.append(parent.displayname)
-                generate_namespace_list(parent, namespaces)
+        while parent and (parent.kind == cindex.CursorKind.NAMESPACE or parent.kind == cindex.CursorKind.CLASS_DECL):
+            if parent.kind == cindex.CursorKind.NAMESPACE:
+                namespaces.append(parent.displayname)
+            parent = parent.semantic_parent
+        # if parent:
+        #     if parent.kind == cindex.CursorKind.NAMESPACE or parent.kind == cindex.CursorKind.CLASS_DECL:
+        #         if parent.kind == cindex.CursorKind.NAMESPACE:
+        #             namespaces.append(parent.displayname)
+        #         build_namespace_list(parent, namespaces)
     return namespaces
 
 
-def get_namespace_name(declaration_cursor):
-    ns_list = generate_namespace_list(declaration_cursor, [])
+def get_namespace_name(cursor):
+    ns_list = build_namespace_list(cursor, [])
     ns_list.reverse()
     ns = "::".join(ns_list)
 
     if len(ns) > 0:
         ns = ns.replace("::__ndk1", "")
-        return ns + "::"
+        return ns
 
-    return declaration_cursor.displayname
+    return ""
 
 
 class NativeType(object):
-    def __init__(self):
+    def __init__(self, cursor=None):
+        self.cursor = cursor
         self.is_object = False
         self.is_function = False
         self.is_enum = False
         self.is_numeric = False
+        self.is_const = False
+        self.is_pointer = False
         self.not_supported = False
         self.param_types = []
         self.ret_type = None
-        self.namespaced_name = ""  # with namespace and class name
+        self.fullname = ""  # with namespace and class name
         self.namespace_name = ""  # only contains namespace
         self.name = ""
         self.whole_name = None
-        self.is_const = False
-        self.is_pointer = False
         self.canonical_type = None
 
     @staticmethod
-    def from_type(ntype):
-        if ntype.kind == cindex.TypeKind.POINTER:
-            nt = NativeType.from_type(ntype.get_pointee())
+    def from_type(type_cursor):
+        if type_cursor.kind == cindex.TypeKind.POINTER:
+            nt = NativeType.from_type(type_cursor.get_pointee())
 
             if None != nt.canonical_type:
                 nt.canonical_type.name += "*"
-                nt.canonical_type.namespaced_name += "*"
+                nt.canonical_type.fullname += "*"
                 nt.canonical_type.whole_name += "*"
 
             nt.name += "*"
-            nt.namespaced_name += "*"
-            nt.whole_name = nt.namespaced_name
+            nt.fullname += "*"
+            nt.whole_name = nt.fullname
             nt.is_enum = False
-            nt.is_const = ntype.get_pointee().is_const_qualified()
+            nt.is_const = type_cursor.get_pointee().is_const_qualified()
             nt.is_pointer = True
             if nt.is_const:
                 nt.whole_name = "const " + nt.whole_name
-        elif ntype.kind == cindex.TypeKind.LVALUEREFERENCE:
-            nt = NativeType.from_type(ntype.get_pointee())
-            nt.is_const = ntype.get_pointee().is_const_qualified()
-            nt.whole_name = nt.namespaced_name + "&"
+        elif type_cursor.kind == cindex.TypeKind.LVALUEREFERENCE:
+            nt = NativeType.from_type(type_cursor.get_pointee())
+            nt.is_const = type_cursor.get_pointee().is_const_qualified()
+            nt.whole_name = nt.whole_name + "&"
 
             if nt.is_const:
                 nt.whole_name = "const " + nt.whole_name
@@ -437,64 +367,64 @@ class NativeType(object):
             if None != nt.canonical_type:
                 nt.canonical_type.whole_name += "&"
         else:
-            nt = NativeType()
-            decl = ntype.get_declaration()
+            nt = NativeType(type_cursor)
+            decl = type_cursor.get_declaration()
 
-            nt.namespaced_name = get_namespaced_name(decl).replace('::__ndk1', '')
+            nt.fullname = get_fullname(decl).replace('::__ndk1', '')
 
             if decl.kind == cindex.CursorKind.CLASS_DECL \
-                    and not nt.namespaced_name.startswith('std::function') \
-                    and not nt.namespaced_name.startswith('std::string') \
-                    and not nt.namespaced_name.startswith('std::basic_string'):
+                    and not nt.fullname.startswith('std::function') \
+                    and not nt.fullname.startswith('std::string') \
+                    and not nt.fullname.startswith('std::basic_string'):
                 nt.is_object = True
                 displayname = decl.displayname.replace('::__ndk1', '')
                 nt.name = normalize_type_str(displayname)
-                nt.namespaced_name = normalize_type_str(nt.namespaced_name)
+                nt.fullname = normalize_type_str(nt.fullname)
                 nt.namespace_name = get_namespace_name(decl)
-                nt.whole_name = nt.namespaced_name
+                nt.whole_name = nt.fullname
             else:
                 if decl.kind == cindex.CursorKind.NO_DECL_FOUND:
-                    nt.name = native_name_from_type(ntype)
+                    nt.name = native_name_from_type(type_cursor)
                 else:
                     nt.name = decl.spelling
                 nt.namespace_name = get_namespace_name(decl)
 
-                if len(nt.namespaced_name) > 0:
-                    nt.namespaced_name = normalize_type_str(nt.namespaced_name)
+                if len(nt.fullname) > 0:
+                    nt.fullname = normalize_type_str(nt.fullname)
 
-                if nt.namespaced_name.startswith("std::function"):
+                if nt.fullname.startswith("std::function"):
                     nt.name = "std::function"
 
-                if len(nt.namespaced_name) == 0 or nt.namespaced_name.find("::") == -1:
-                    nt.namespaced_name = nt.name
+                if len(nt.fullname) == 0 or nt.fullname.find("::") == -1:
+                    nt.fullname = nt.name
 
-                nt.whole_name = nt.namespaced_name
-                nt.is_const = ntype.is_const_qualified()
+                nt.whole_name = nt.fullname
+                nt.is_const = type_cursor.is_const_qualified()
                 if nt.is_const:
                     nt.whole_name = "const " + nt.whole_name
 
                 # Check whether it's a std::function typedef
-                cdecl = ntype.get_canonical().get_declaration()
+                cdecl = type_cursor.get_canonical().get_declaration()
                 if None != cdecl.spelling and 0 == cmp(cdecl.spelling, "function"):
                     nt.name = "std::function"
 
                 if nt.name != INVALID_NATIVE_TYPE and nt.name != "std::string" and nt.name != "std::function":
-                    if ntype.kind == cindex.TypeKind.UNEXPOSED or ntype.kind == cindex.TypeKind.TYPEDEF or ntype.kind == cindex.TypeKind.ELABORATED:
-                        ret = NativeType.from_type(ntype.get_canonical())
+                    if type_cursor.kind == cindex.TypeKind.UNEXPOSED or type_cursor.kind == cindex.TypeKind.TYPEDEF or type_cursor.kind == cindex.TypeKind.ELABORATED:
+                        ret = NativeType.from_type(type_cursor.get_canonical())
                         if ret.name != "":
                             if decl.kind == cindex.CursorKind.TYPEDEF_DECL:
                                 ret.canonical_type = nt
                             return ret
 
-                nt.is_enum = ntype.get_canonical().kind == cindex.TypeKind.ENUM
+                nt.is_enum = type_cursor.get_canonical().kind == cindex.TypeKind.ENUM
 
                 if nt.name == "std::function":
                     nt.is_object = False
-                    lambda_display_name = get_namespaced_name(cdecl)
+                    lambda_display_name = get_fullname(cdecl)
                     lambda_display_name = lambda_display_name.replace("::__ndk1", "")
                     lambda_display_name = normalize_type_str(lambda_display_name)
-                    nt.namespaced_name = lambda_display_name
-                    r = re.compile('function<([^\s]+).*\((.*)\)>').search(nt.namespaced_name)
+                    nt.fullname = lambda_display_name
+                    r = re.compile('function<([^\s]+).*\((.*)\)>').search(nt.fullname)
                     (ret_type, params) = r.groups()
                     params = filter(None, params.split(", "))
 
@@ -517,8 +447,8 @@ class NativeType(object):
 
         nt = NativeType()
         nt.name = displayname.split("::")[-1]
-        nt.namespaced_name = displayname
-        nt.whole_name = nt.namespaced_name
+        nt.fullname = displayname
+        nt.whole_name = nt.fullname
         nt.is_object = True
         return nt
 
@@ -527,151 +457,66 @@ class NativeType(object):
         params = ["%s larg%d" % (str(nt), i) for i, nt in enumerate(self.param_types)]
         return ", ".join(params)
 
-    @staticmethod
-    def dict_has_key_re(dict, real_key_list):
-        for real_key in real_key_list:
-            for (k, v) in dict.items():
-                if k.startswith('@'):
-                    k = k[1:]
-                    match = re.match("^" + k + "$", real_key)
-                    if match:
-                        return True
-                else:
-                    if k == real_key:
-                        return True
-        return False
-
-    @staticmethod
-    def dict_get_value_re(dict, real_key_list):
-        for real_key in real_key_list:
-            for (k, v) in dict.items():
-                if k.startswith('@'):
-                    k = k[1:]
-                    match = re.match("^" + k + "$", real_key)
-                    if match:
-                        return v
-                else:
-                    if k == real_key:
-                        return v
-        return None
-
-    @staticmethod
-    def dict_replace_value_re(dict, real_key_list):
-        for real_key in real_key_list:
-            for (k, v) in dict.items():
-                if k.startswith('@'):
-                    k = k[1:]
-                    match = re.match('.*' + k, real_key)
-                    if match:
-                        return re.sub(k, v, real_key)
-                else:
-                    if k == real_key:
-                        return v
-        return None
-
-    def from_native(self, convert_opts):
-
-        return "#pragma warning NO CONVERSION FROM NATIVE FOR " + self.name
-
-    def to_native(self, convert_opts):
-
-        return "#pragma warning NO CONVERSION TO NATIVE FOR " + self.name + "\n" + convert_opts[
-            'level'] * "\t" + "ok = false"
-
-    def to_string(self, generator):
-        conversions = generator.config['conversions']
-        if conversions.has_key('native_types'):
-            native_types_dict = conversions['native_types']
-            if NativeType.dict_has_key_re(native_types_dict, [self.namespaced_name]):
-                return NativeType.dict_get_value_re(native_types_dict, [self.namespaced_name])
-
-        name = self.namespaced_name
-
-        to_native_dict = generator.config['conversions']['to_native']
-        from_native_dict = generator.config['conversions']['from_native']
-        use_typedef = False
-
-        typedef_name = self.canonical_type.name if None != self.canonical_type else None
-
-        if None != typedef_name:
-            if NativeType.dict_has_key_re(to_native_dict, [typedef_name]) or NativeType.dict_has_key_re(
-                    from_native_dict, [typedef_name]):
-                use_typedef = True
-
-        if use_typedef and self.canonical_type:
-            name = self.canonical_type.namespaced_name
-        return "const " + name if (self.is_pointer and self.is_const) else name
-
-    def get_whole_name(self, generator):
-        conversions = generator.config['conversions']
-        to_native_dict = conversions['to_native']
-        from_native_dict = conversions['from_native']
-        use_typedef = False
-        name = self.whole_name
-        typedef_name = self.canonical_type.name if None != self.canonical_type else None
-
-        if None != typedef_name:
-            if NativeType.dict_has_key_re(to_native_dict, [typedef_name]) or NativeType.dict_has_key_re(
-                    from_native_dict, [typedef_name]):
-                use_typedef = True
-
-        if use_typedef and self.canonical_type:
-            name = self.canonical_type.whole_name
-
-        to_replace = None
-        if conversions.has_key('native_types'):
-            native_types_dict = conversions['native_types']
-            to_replace = NativeType.dict_replace_value_re(native_types_dict, [name])
-
-        if to_replace:
-            name = to_replace
-
-        return name
-
-    def object_can_convert(self, generator, is_to_native=True):
-        if self.is_object:
-            keys = []
-            if self.canonical_type != None:
-                keys.append(self.canonical_type.name)
-            keys.append(self.name)
-            if is_to_native:
-                to_native_dict = generator.config['conversions']['to_native']
-                if NativeType.dict_has_key_re(to_native_dict, keys):
-                    return True
-            else:
-                from_native_dict = generator.config['conversions']['from_native']
-                if NativeType.dict_has_key_re(from_native_dict, keys):
-                    return True
-
-        return False
-
     def __str__(self):
         return self.canonical_type.whole_name if None != self.canonical_type else self.whole_name
 
 
-class NativeField(object):
+class FieldAttributes(object):
+    Empty = 0
+    Private = 1
+    Protected = 2
+    Public = 3
 
+    BaseAttributeEnd = 15
+
+    Static = 16
+
+
+class NativeField(object):
     def __init__(self, cursor):
         cursor = cursor.canonical
         self.cursor = cursor
         self.name = cursor.displayname
         self.kind = cursor.type.kind
         self.location = cursor.location
-        self.access_specifier = access_specifier_map[cursor.access_specifier]
 
-        member_field_re = re.compile('m_(\w+)')
-        match = member_field_re.match(self.name)
         self.signature_name = self.name
-        self.ntype = NativeType.from_type(cursor.type)
-        if match:
-            self.pretty_name = match.group(1)
+        self.field_type = NativeType.from_type(cursor.type)
+        self.attributes = FieldAttributes.Empty
+
+        if self.cursor.access_specifier == cindex.AccessSpecifier.PRIVATE:
+            self.set_attribute(FieldAttributes.Private)
+        elif self.cursor.access_specifier == cindex.AccessSpecifier.PROTECTED:
+            self.set_attribute(FieldAttributes.Protected)
+        elif self.cursor.access_specifier == cindex.AccessSpecifier.PUBLIC:
+            self.set_attribute(FieldAttributes.Public)
+
+    def set_attribute(self, value):
+        if value > FieldAttributes.BaseAttributeEnd:
+            self.attributes = self.attributes | value
         else:
-            self.pretty_name = self.name
+            self.attributes = (self.attributes ^ (self.attributes & FieldAttributes.BaseAttributeEnd)) | value
+
+    @property
+    def is_private(self):
+        return self.attributes & FieldAttributes.BaseAttributeEnd == FieldAttributes.Private
+
+    @property
+    def is_protected(self):
+        return self.attributes & FieldAttributes.BaseAttributeEnd == FieldAttributes.Protected
+
+    @property
+    def is_public(self):
+        return self.attributes & FieldAttributes.BaseAttributeEnd == FieldAttributes.Public
+
+    @property
+    def is_static(self):
+        return self.attributes & FieldAttributes.Static > 0
 
     @staticmethod
-    def can_parse(ntype):
-        native_type = NativeType.from_type(ntype)
-        if ntype.kind == cindex.TypeKind.UNEXPOSED and native_type.name != "std::string":
+    def can_parse(type_cursor):
+        native_type = NativeType.from_type(type_cursor)
+        if type_cursor.kind == cindex.TypeKind.UNEXPOSED and native_type.name != "std::string":
             return False
         return True
 
@@ -701,7 +546,8 @@ class FunctionAttributes(object):
     Virtual = 64
     Constructor = 128
     Destructor = 256
-    Implement = 512
+    Const = 512
+    Implement = 1024
 
 
 class NativeFunction(object):
@@ -710,8 +556,7 @@ class NativeFunction(object):
         self.func_name = cursor.spelling
         self.signature_name = self.func_name
         self.arguments = []
-        self.argumtntTips = []
-        self.static = cursor.kind == cindex.CursorKind.CXX_METHOD and cursor.is_static_method()
+        self.argumentTips = []
         self.implementations = []
         self.is_overloaded = False
         self.is_constructor = False
@@ -720,6 +565,7 @@ class NativeFunction(object):
         self.ret_type = NativeType.from_type(cursor.result_type)
         self.comment = self.get_comment(cursor.raw_comment)
         self.attributes = FunctionAttributes.Empty
+        self.class_name = None
 
         self._parse()
 
@@ -727,7 +573,7 @@ class NativeFunction(object):
         # parse the arguments
 
         for arg in self.cursor.get_arguments():
-            self.argumtntTips.append(arg.spelling)
+            self.argumentTips.append(arg.spelling)
 
         for arg in self.cursor.type.argument_types():
             nt = NativeType.from_type(arg)
@@ -750,6 +596,7 @@ class NativeFunction(object):
 
         self.min_args = index if found_default_arg else len(self.arguments)
 
+        # set access specifier
         if self.cursor.access_specifier == cindex.AccessSpecifier.PRIVATE:
             self.set_attribute(FunctionAttributes.Private)
         elif self.cursor.access_specifier == cindex.AccessSpecifier.PROTECTED:
@@ -757,8 +604,36 @@ class NativeFunction(object):
         elif self.cursor.access_specifier == cindex.AccessSpecifier.PUBLIC:
             self.set_attribute(FunctionAttributes.Public)
 
+        # check is static function
+        if self.cursor.is_static_method():
+            self.set_attribute(FunctionAttributes.Static)
+
+        # check is virtual function
+        if self.cursor.is_virtual_method():
+            self.set_attribute(FunctionAttributes.Virtual)
+
+        if self.cursor.is_const_method():
+            self.set_attribute(FunctionAttributes.Const)
+
+        # set class name
+        if self.cursor.semantic_parent.kind == cindex.CursorKind.CLASS_DECL:
+            self.class_name = get_fullname(self.cursor.semantic_parent)
+
+        # check have implement
+        if self._check_have_implement():
+            self.set_attribute(FunctionAttributes.Implement)
+
+    def _check_have_implement(self):
+        have_implement = False
+
+        for node in self.cursor.get_children():
+            if node.kind == cindex.CursorKind.COMPOUND_STMT:
+                have_implement = True
+                break
+        return have_implement
+
     def get_comment(self, comment):
-        replaceStr = comment
+        replace_str = comment
 
         if comment is None:
             return ""
@@ -781,18 +656,14 @@ class NativeFunction(object):
         ]
 
         for item in regular_replace_list:
-            replaceStr = re.sub(item[0], item[1], replaceStr)
+            replace_str = re.sub(item[0], item[1], replace_str)
 
-        return replaceStr
-
-    def generate_code(self, current_class=None, generator=None, is_override=False, is_ctor=False):
-        print("do nothing")
+        return replace_str
 
     def set_attribute(self, value):
         if value > FunctionAttributes.BaseAttributeEnd:
             self.attributes = self.attributes | value
         else:
-            # 取得基础位数据，利用异或消除基础位，在把值写入基础位
             self.attributes = (self.attributes ^ (self.attributes & FunctionAttributes.BaseAttributeEnd)) | value
 
     @property
@@ -808,110 +679,82 @@ class NativeFunction(object):
         return self.attributes & FunctionAttributes.BaseAttributeEnd == FunctionAttributes.Public
 
     @property
+    def is_static(self):
+        return self.attributes & FunctionAttributes.Static > 0
+
+    @property
+    def is_virtual(self):
+        return self.attributes & FunctionAttributes.Virtual > 0
+
+    @property
+    def is_const(self):
+        return self.attributes & FunctionAttributes.Const > 0
+
+    @property
     def is_implement(self):
         return self.attributes & FunctionAttributes.Implement > 0
 
-    def start_line(self):
+    def get_extent_start(self):
+        if self.cursor is not None:
+            return self.cursor.extent.start
+        else:
+            return None
+
+    def get_extent_start_line(self):
         if self.cursor is not None:
             return self.cursor.extent.start.line
         else:
             return -1
 
-    def end_line(self):
+    def get_extent_end(self):
+        if self.cursor is not None:
+            return self.cursor.extent.end
+        else:
+            return None
+
+    def get_extent_end_line(self):
         if self.cursor is not None:
             return self.cursor.extent.end.line
         else:
             return -1
 
-class NativeOverloadedFunction(object):
-    def __init__(self, func_array):
-        self.implementations = func_array
-        self.func_name = func_array[0].func_name
-        self.signature_name = self.func_name
-        self.min_args = 100
-        self.is_constructor = False
-        self.is_overloaded = True
-        self.is_ctor = False
-        for m in func_array:
-            self.min_args = min(self.min_args, m.min_args)
-
-        self.comment = self.get_comment(func_array[0].cursor.raw_comment)
-
-    def get_comment(self, comment):
-        replaceStr = comment
-
-        if comment is None:
-            return ""
-
-        regular_replace_list = [
-            ("(\s)*//!", ""),
-            ("(\s)*//", ""),
-            ("(\s)*/\*\*", ""),
-            ("(\s)*/\*", ""),
-            ("\*/", ""),
-            ("\r\n", "\n"),
-            ("\n(\s)*\*", "\n"),
-            ("\n(\s)*@", "\n"),
-            ("\n(\s)*", "\n"),
-            ("\n(\s)*\n", "\n"),
-            ("^(\s)*\n", ""),
-            ("\n(\s)*$", ""),
-            ("\n", "<br>\n"),
-            ("\n", "\n-- ")
-        ]
-
-        for item in regular_replace_list:
-            replaceStr = re.sub(item[0], item[1], replaceStr)
-
-        return replaceStr
-
-    def append(self, func):
-        self.min_args = min(self.min_args, func.min_args)
-        self.implementations.append(func)
-
-    def generate_code(self, current_class=None, is_override=False, is_ctor=False):
-        print("do nothing")
-
 
 class NativeClass(object):
-    def __init__(self, cursor, generator):
+    def __init__(self, cursor):
         # the cursor to the implementation
         self.cursor = cursor
         self.class_name = cursor.displayname
         self.is_ref_class = self.class_name == "Ref"
-        self.namespaced_class_name = self.class_name
+        self.full_class_name = self.class_name
         self.parents = []
         self.fields = []
         self.public_fields = []
-        self.methods = {}
-        self.static_methods = {}
-        self.generator = generator
-        self.is_abstract = self.class_name in generator.abstract_classes
+        self.static_fields = []
+        self.methods = []
+        self.static_methods = []
+        self.is_abstract = False  # self.class_name in generator.abstract_classes
         self._current_visibility = cindex.AccessSpecifier.PRIVATE
         # for generate lua api doc
         self.override_methods = {}
         self.has_constructor = False
         self.namespace_name = ""
 
-        registration_name = generator.get_class_or_rename_class(self.class_name)
-        if generator.remove_prefix:
-            self.target_class_name = re.sub('^' + generator.remove_prefix, '', registration_name)
-        else:
-            self.target_class_name = registration_name
-        self.namespaced_class_name = get_namespaced_name(cursor)
+        self.full_class_name = get_fullname(cursor)
         self.namespace_name = get_namespace_name(cursor)
 
         self._parse()
 
     @property
     def underlined_class_name(self):
-        return self.namespaced_class_name.replace("::", "_")
+        return self.full_class_name.replace("::", "_")
 
     def _parse(self):
         """
         parse the current cursor, getting all the necesary information
         """
-        self._parse_cursor(self.cursor)
+        # the root cursor is CLASS_DECL.
+        for cursor in self.cursor.get_children():
+            self._traverse(cursor)
 
     def methods_clean(self):
         """
@@ -951,11 +794,60 @@ class NativeClass(object):
                 ret.append({"name": name, "impl": impl})
         return ret
 
-    def _parse_cursor(self, cursor=None, depth=0):
-        for node in cursor.get_children():
-            # print("%s%s - %s" % ("> " * depth, node.displayname, node.kind))
-            if self._process_cursor(node):
-                self._parse_cursor(node, depth + 1)
+    def _traverse(self, cursor=None, depth=0):
+        if cursor.kind == cindex.CursorKind.CXX_BASE_SPECIFIER:
+            parent = cursor.get_definition()
+            parent_name = parent.displayname
+
+            # if not self.class_name in self.generator.classes_have_no_parents:
+            #     if parent_name and parent_name not in self.generator.base_classes_to_skip:
+            #         # if parent and self.generator.in_listed_classes(parent.displayname):
+            #         if not self.generator.parsed_classes.has_key(parent.displayname):
+            #             parent = NativeClass(parent, self.generator)
+            #             self.generator.parsed_classes[parent.class_name] = parent
+            #         else:
+            #             parent = self.generator.parsed_classes[parent.displayname]
+            #
+            #         self.parents.append(parent)
+            #
+            # if parent_name == "Ref":
+            #     self.is_ref_class = True
+
+        elif cursor.kind == cindex.CursorKind.FIELD_DECL:
+            self.fields.append(NativeField(cursor))
+            if self._current_visibility == cindex.AccessSpecifier.PUBLIC and NativeField.can_parse(cursor.type):
+                self.public_fields.append(NativeField(cursor))
+        elif cursor.kind == cindex.CursorKind.VAR_DECL:
+            self.static_fields.append(NativeField(cursor))
+        elif cursor.kind == cindex.CursorKind.CXX_ACCESS_SPEC_DECL:
+            self._current_visibility = cursor.access_specifier
+        elif cursor.kind == cindex.CursorKind.CXX_METHOD:  # and cursor.availability != cindex.AvailabilityKind.DEPRECATED:
+            # skip if variadic
+            m = NativeFunction(cursor)
+            registration_name = m.func_name  # self.generator.should_rename_function(self.class_name, m.func_name) or m.func_name
+            # bail if the function is not supported (at least one arg not supported)
+            if m.not_supported:
+                return None
+
+            self.methods.append(m)
+        elif cursor.kind == cindex.CursorKind.CONSTRUCTOR and not self.is_abstract:
+            # Skip copy constructor
+            if cursor.displayname == self.class_name + "(const " + self.full_class_name + " &)":
+                # print "Skip copy constructor: " + cursor.displayname
+                return None
+
+            m = NativeFunction(cursor)
+            m.is_constructor = True
+            m.set_attribute(FunctionAttributes.Constructor)
+            self.has_constructor = True
+            self.methods.append(m)
+        elif cursor.kind == cindex.CursorKind.DESTRUCTOR:
+            m = NativeFunction(cursor)
+            m.set_attribute(FunctionAttributes.Destructor)
+            self.methods.append(m)
+
+        # else:
+        # print >> sys.stderr, "unknown cursor: %s - %s" % (cursor.kind, cursor.displayname)
 
     @staticmethod
     def _is_method_in_parents(current_class, method_name):
@@ -980,101 +872,10 @@ class NativeClass(object):
 
         return False
 
-    def _process_cursor(self, cursor):
-        """
-        process the node, depending on the type. If returns true, then it will perform a deep
-        iteration on its children. Otherwise it will continue with its siblings (if any)
 
-        @param: cursor the cursor to analyze
-        """
-        if cursor.kind == cindex.CursorKind.CXX_BASE_SPECIFIER:
-            parent = cursor.get_definition()
-            parent_name = parent.displayname
-
-            # if not self.class_name in self.generator.classes_have_no_parents:
-            #     if parent_name and parent_name not in self.generator.base_classes_to_skip:
-            #         # if parent and self.generator.in_listed_classes(parent.displayname):
-            #         if not self.generator.parsed_classes.has_key(parent.displayname):
-            #             parent = NativeClass(parent, self.generator)
-            #             self.generator.parsed_classes[parent.class_name] = parent
-            #         else:
-            #             parent = self.generator.parsed_classes[parent.displayname]
-            #
-            #         self.parents.append(parent)
-            #
-            # if parent_name == "Ref":
-            #     self.is_ref_class = True
-
-        elif cursor.kind == cindex.CursorKind.FIELD_DECL:
-            self.fields.append(NativeField(cursor))
-            if self._current_visibility == cindex.AccessSpecifier.PUBLIC and NativeField.can_parse(cursor.type):
-                self.public_fields.append(NativeField(cursor))
-        elif cursor.kind == cindex.CursorKind.CXX_ACCESS_SPEC_DECL:
-            self._current_visibility = cursor.access_specifier
-        elif cursor.kind == cindex.CursorKind.CXX_METHOD and get_availability(cursor) != AvailabilityKind.DEPRECATED:
-            # skip if variadic
-            if self._current_visibility == cindex.AccessSpecifier.PUBLIC and not cursor.type.is_function_variadic():
-                m = NativeFunction(cursor)
-                registration_name = m.func_name  # self.generator.should_rename_function(self.class_name, m.func_name) or m.func_name
-                # bail if the function is not supported (at least one arg not supported)
-                if m.not_supported:
-                    return False
-                if m.is_override:
-                    if NativeClass._is_method_in_parents(self, registration_name):
-                        if self.generator.script_type == "lua":
-                            if not self.override_methods.has_key(registration_name):
-                                self.override_methods[registration_name] = m
-                            else:
-                                previous_m = self.override_methods[registration_name]
-                                if isinstance(previous_m, NativeOverloadedFunction):
-                                    previous_m.append(m)
-                                else:
-                                    self.override_methods[registration_name] = NativeOverloadedFunction([m, previous_m])
-                        return False
-
-                if m.static:
-                    if not self.static_methods.has_key(registration_name):
-                        self.static_methods[registration_name] = m
-                    else:
-                        previous_m = self.static_methods[registration_name]
-                        if isinstance(previous_m, NativeOverloadedFunction):
-                            previous_m.append(m)
-                        else:
-                            self.static_methods[registration_name] = NativeOverloadedFunction([m, previous_m])
-                else:
-                    if not self.methods.has_key(registration_name):
-                        self.methods[registration_name] = m
-                    else:
-                        previous_m = self.methods[registration_name]
-                        if isinstance(previous_m, NativeOverloadedFunction):
-                            previous_m.append(m)
-                        else:
-                            self.methods[registration_name] = NativeOverloadedFunction([m, previous_m])
-            return True
-
-        elif self._current_visibility == cindex.AccessSpecifier.PUBLIC and cursor.kind == cindex.CursorKind.CONSTRUCTOR and not self.is_abstract:
-            # Skip copy constructor
-            if cursor.displayname == self.class_name + "(const " + self.namespaced_class_name + " &)":
-                # print "Skip copy constructor: " + cursor.displayname
-                return True
-
-            m = NativeFunction(cursor)
-            m.is_constructor = True
-            self.has_constructor = True
-            if not self.methods.has_key('constructor'):
-                self.methods['constructor'] = m
-            else:
-                previous_m = self.methods['constructor']
-                if isinstance(previous_m, NativeOverloadedFunction):
-                    previous_m.append(m)
-                else:
-                    m = NativeOverloadedFunction([m, previous_m])
-                    m.is_constructor = True
-                    self.methods['constructor'] = m
-            return True
-        # else:
-        # print >> sys.stderr, "unknown cursor: %s - %s" % (cursor.kind, cursor.displayname)
-        return False
+class NativeNameSpace(object):
+    def __init__(self, cursor):
+        self.cursor = cursor
 
 
 class Parser(object):
@@ -1082,8 +883,13 @@ class Parser(object):
         self.index = cindex.Index.create()
         self.clang_args = opts['clang_args']
         self.skip_classes = {}
+        self.parsed_classes = {}
         self.win32_clang_flags = opts['win32_clang_flags']
         self.methods = []
+        self.namespaces = []
+
+        self.current_namespace = None
+        self._parsing_file = None
 
         extend_clang_args = []
 
@@ -1101,40 +907,16 @@ class Parser(object):
         if sys.platform == 'win32' and self.win32_clang_flags != None:
             self.clang_args.extend(self.win32_clang_flags)
 
-        if opts['skip']:
-            list_of_skips = re.split(",\n?", opts['skip'])
-            for skip in list_of_skips:
-                class_name, methods = skip.split("::")
-                self.skip_classes[class_name] = []
-                match = re.match("\[([^]]+)\]", methods)
-                if match:
-                    self.skip_classes[class_name] = match.group(1).split(" ")
-                else:
-                    raise Exception("invalid list of skip methods")
-
-    def should_skip(self, class_name, method_name, verbose=False):
-        if class_name == "*" and self.skip_classes.has_key("*"):
-            for func in self.skip_classes["*"]:
-                if re.match(func, method_name):
-                    return True
-        else:
-            for key in self.skip_classes.iterkeys():
-                if key == "*" or re.match("^" + key + "$", class_name):
-                    if verbose:
-                        print "%s in skip_classes" % (class_name)
-                    if len(self.skip_classes[key]) == 1 and self.skip_classes[key][0] == "*":
-                        if verbose:
-                            print "%s will be skipped completely" % (class_name)
-                        return True
-                    if method_name != None:
-                        for func in self.skip_classes[key]:
-                            if re.match(func, method_name):
-                                if verbose:
-                                    print "%s will skip method %s" % (class_name, method_name)
-                                return True
-        if verbose:
-            print "%s will be accepted (%s, %s)" % (class_name, key, self.skip_classes[key])
-        return False
+        # if opts['skip']:
+        #     list_of_skips = re.split(",\n?", opts['skip'])
+        #     for skip in list_of_skips:
+        #         class_name, methods = skip.split("::")
+        #         self.skip_classes[class_name] = []
+        #         match = re.match("\[([^]]+)\]", methods)
+        #         if match:
+        #             self.skip_classes[class_name] = match.group(1).split(" ")
+        #         else:
+        #             raise Exception("invalid list of skip methods")
 
     @staticmethod
     def in_parse_file(cursor, parsing_file):
@@ -1143,28 +925,88 @@ class Parser(object):
         elif cursor.extent and cursor.extent.start:
             source_file = cursor.extent.start.file.name
 
-        source_file = source_file.replace("\\", "/");
+        source_file = source_file.replace("\\", "/")
+        # print("%s=%s" % (source_file, parsing_file))
         return source_file == parsing_file
 
-    def in_listed_classes(self, class_name):
-        """
-        returns True if the class is in the list of required classes and it's not in the skip list
-        """
-        for key in self.classes:
-            md = re.match("^" + key + "$", class_name)
-            if md and not self.should_skip(class_name, None):
-                return True
-        return False
+    def _check_diagnostics(self, diagnostics):
+        errors = []
+        for idx, d in enumerate(diagnostics):
+            if d.severity > 2:
+                errors.append(d)
+        if len(errors) == 0:
+            return
+        print("====\nErrors in parsing headers:")
+        severities = ['Ignored', 'Note', 'Warning', 'Error', 'Fatal']
+        for idx, d in enumerate(errors):
+            print "%s. <severity = %s,\n    location = %r,\n    details = %r>" % (
+                idx + 1, severities[d.severity], d.location, d.spelling)
+        print("====\n")
 
-    def in_listed_extend_classed(self, class_name):
-        """
-        returns True if the class is in the list of required classes that need to extend
-        """
-        for key in self.classes_need_extend:
-            md = re.match("^" + key + "$", class_name)
-            if md:
-                return True
-        return False
+    # must read the yaml file first
+    def parse_file(self, file_path):
+        tu = self.index.parse(file_path, self.clang_args)
+        if len(tu.diagnostics) > 0:
+            self._check_diagnostics(tu.diagnostics)
+            is_fatal = False
+            for d in tu.diagnostics:
+                if d.severity >= cindex.Diagnostic.Error:
+                    is_fatal = True
+            if is_fatal:
+                print("*** Found errors - can not continue")
+                raise Exception("Fatal error in parsing headers")
+        self._parsing_file = file_path.replace("\\", "/")
+
+        # the root cursor is TRANSLATION_UNIT,visitor children
+        if tu.cursor.kind == cindex.CursorKind.TRANSLATION_UNIT:
+            cd = Parser._get_children_array_from_iter(tu.cursor.get_children())
+            for cursor in tu.cursor.get_children():
+                self._traverse(cursor)
+
+    @staticmethod
+    def _get_children_array_from_iter(cursor_iter):
+        children = []
+        for child in cursor_iter:
+            children.append(child)
+        return children
+
+    def _traverse(self, cursor):
+        if not Parser.in_parse_file(cursor, self._parsing_file):
+            return None
+
+        if cursor.kind == cindex.CursorKind.CLASS_DECL:
+            # print("find class")
+            if cursor == cursor.type.get_declaration() and len(
+                    Parser._get_children_array_from_iter(cursor.get_children())) > 0:
+
+                if not self.parsed_classes.has_key(cursor.displayname):
+                    nclass = NativeClass(cursor)
+                    self.parsed_classes[cursor.displayname] = nclass
+                return
+        elif cursor.kind == cindex.CursorKind.FUNCTION_DECL:
+            # print("find function")
+            fun = NativeFunction(cursor)
+            self.methods.append(fun)
+        elif cursor.kind == cindex.CursorKind.CXX_METHOD:
+            # print("find method")
+            method = NativeFunction(cursor)
+            self.methods.append(method)
+        elif cursor.kind == cindex.CursorKind.NAMESPACE:
+            # print("find namespace")
+            self.current_namespace = cursor.spelling
+            for sub_cursor in cursor.get_children():
+                self._traverse(sub_cursor)
+            self.current_namespace = None
+        elif cursor.kind == cindex.CursorKind.CONSTRUCTOR:
+            # print("find CONSTRUCTOR")
+            method = NativeFunction(cursor)
+            self.methods.append(method)
+        elif cursor.kind == cindex.CursorKind.DESTRUCTOR:
+            # print("find DESTRUCTOR")
+            method = NativeFunction(cursor)
+            self.methods.append(method)
+        elif cursor.kind == cindex.CursorKind.OBJC_INTERFACE_DECL:
+            print("find objc define")
 
     def sorted_classes(self):
         """
@@ -1191,301 +1033,29 @@ class Parser(object):
             sorted_parents.append(nclass.class_name)
         return sorted_parents
 
-    def start(self):
-        print("start")
-
-    # must read the yaml file first
-    def parse_file(self, file_path):
-        tu = self.index.parse(file_path, self.clang_args)
-        if len(tu.diagnostics) > 0:
-            self._check_diagnostics(tu.diagnostics)
-            is_fatal = False
-            for d in tu.diagnostics:
-                if d.severity >= cindex.Diagnostic.Error:
-                    is_fatal = True
-            if is_fatal:
-                print("*** Found errors - can not continue")
-                raise Exception("Fatal error in parsing headers")
-        self._parse_cursor(tu.cursor, file_path)
-
-    def _parse_cursor(self, cursor, current_file):
-        if not Parser.in_parse_file(cursor, current_file):
-            return None
-
-        if cursor.kind == cindex.CursorKind.TRANSLATION_UNIT:
-            for sub_cursor in cursor.get_children():
-                self._parse_cursor(sub_cursor, current_file)
-
-        elif cursor.kind == cindex.CursorKind.CLASS_DECL:
-            print("find class")
-            if cursor == cursor.type.get_declaration() and len(
-                    self._get_children_array_from_iter(cursor.get_children())) > 0:
-
-                if not self.parsed_classes.has_key(cursor.displayname):
-                    nclass = NativeClass(cursor, self)
-                    self.parsed_classes[cursor.displayname] = nclass
-                return
-        elif cursor.kind == cindex.CursorKind.FUNCTION_DECL:
-            print("find function")
-            fun = NativeFunction(cursor)
-            self.methods.append(fun)
-        elif cursor.kind == cindex.CursorKind.CXX_METHOD:
-            print("find method")
-            method = NativeFunction(cursor)
-            self.methods.append(method)
-        elif cursor.kind == cindex.CursorKind.NAMESPACE:
-            print("find namespace")
-        elif cursor.kind == cindex.CursorKind.NAMESPACE:
-            print("find namespace")
-        elif cursor.kind == cindex.CursorKind.CONSTRUCTOR:
-            print("find CONSTRUCTOR")
-            method = NativeFunction(cursor)
-            self.methods.append(method)
-        elif cursor.kind == cindex.CursorKind.DESTRUCTOR:
-            print("find DESTRUCTOR")
-            method = NativeFunction(cursor)
-            self.methods.append(method)
-        elif cursor.kind == cindex.CursorKind.OBJC_INTERFACE_DECL:
-            print("find objc define")
-
-    def _get_children_array_from_iter(iter):
-        children = []
-        for child in iter:
-            children.append(child)
-        return children
-
-    def _check_diagnostics(self, diagnostics):
-        errors = []
-        for idx, d in enumerate(diagnostics):
-            if d.severity > 2:
-                errors.append(d)
-        if len(errors) == 0:
-            return
-        print("====\nErrors in parsing headers:")
-        severities = ['Ignored', 'Note', 'Warning', 'Error', 'Fatal']
-        for idx, d in enumerate(errors):
-            print "%s. <severity = %s,\n    location = %r,\n    details = %r>" % (
-                idx + 1, severities[d.severity], d.location, d.spelling)
-        print("====\n")
-
-    def _parse_headers(self):
-        for header in self.headers:
-            tu = self.index.parse(header, self.clang_args)
-            if len(tu.diagnostics) > 0:
-                self._pretty_print(tu.diagnostics)
-                is_fatal = False
-                for d in tu.diagnostics:
-                    if d.severity >= cindex.Diagnostic.Error:
-                        is_fatal = True
-                if is_fatal:
-                    print("*** Found errors - can not continue")
-                    raise Exception("Fatal error in parsing headers")
-            self._deep_iterate(tu.cursor)
-
-    def _deep_iterate(self, cursor, depth=0):
-
-        def get_children_array_from_iter(iter):
-            children = []
-            for child in iter:
-                children.append(child)
-            return children
-
-        # get the canonical type
-        if cursor.kind == cindex.CursorKind.CLASS_DECL:
-            if cursor == cursor.type.get_declaration() and len(get_children_array_from_iter(cursor.get_children())) > 0:
-                is_targeted_class = True
-                if self.cpp_ns:
-                    is_targeted_class = False
-                    namespaced_name = get_namespaced_name(cursor)
-                    for ns in self.cpp_ns:
-                        if namespaced_name.startswith(ns):
-                            is_targeted_class = True
-                            break
-
-                if is_targeted_class and self.in_listed_classes(cursor.displayname):
-                    if not self.parsed_classes.has_key(cursor.displayname):
-                        nclass = NativeClass(cursor, self)
-                        nclass.generate_code()
-                        self.parsed_classes[cursor.displayname] = nclass
-                    return
-
-        for node in cursor.get_children():
-            # print("%s %s - %s" % (">" * depth, node.displayname, node.kind))
-            self._deep_iterate(node, depth + 1)
-
-    def scriptname_from_native(self, namespace_class_name, namespace_name):
-        script_ns_dict = self.config['conversions']['ns_map']
-        for (k, v) in script_ns_dict.items():
-            if k == namespace_name:
-                return namespace_class_name.replace("*", "").replace("const ", "").replace(k, v)
-        if namespace_class_name.find("::") >= 0:
-            if namespace_class_name.find("std::") == 0:
-                return namespace_class_name
-            else:
-                raise Exception(
-                    "The namespace (%s) conversion wasn't set in 'ns_map' section of the conversions.yaml" % namespace_class_name)
-        else:
-            return namespace_class_name.replace("*", "").replace("const ", "")
-
-    def is_cocos_class(self, namespace_class_name):
-        script_ns_dict = self.config['conversions']['ns_map']
-        for (k, v) in script_ns_dict.items():
-            if namespace_class_name.find("std::") == 0:
-                return False
-            if namespace_class_name.find(k) >= 0:
-                return True
-
-        return False
-
-    def scriptname_cocos_class(self, namespace_class_name):
-        script_ns_dict = self.config['conversions']['ns_map']
-        for (k, v) in script_ns_dict.items():
-            if namespace_class_name.find(k) >= 0:
-                return namespace_class_name.replace("*", "").replace("const ", "").replace(k, v)
-        raise Exception(
-            "The namespace (%s) conversion wasn't set in 'ns_map' section of the conversions.yaml" % namespace_class_name)
-
-    def js_typename_from_natve(self, namespace_class_name):
-        script_ns_dict = self.config['conversions']['ns_map']
-        if namespace_class_name.find("std::") == 0:
-            if namespace_class_name.find("std::string") == 0:
-                return "String"
-            if namespace_class_name.find("std::vector") == 0:
-                return "Array"
-            if namespace_class_name.find("std::map") == 0 or namespace_class_name.find("std::unordered_map") == 0:
-                return "map_object"
-            if namespace_class_name.find("std::function") == 0:
-                return "function"
-
-        for (k, v) in script_ns_dict.items():
-            if namespace_class_name.find(k) >= 0:
-                if namespace_class_name.find("cocos2d::Vec2") == 0:
-                    return "vec2_object"
-                if namespace_class_name.find("cocos2d::Vec3") == 0:
-                    return "vec3_object"
-                if namespace_class_name.find("cocos2d::Vec4") == 0:
-                    return "vec4_object"
-                if namespace_class_name.find("cocos2d::Mat4") == 0:
-                    return "mat4_object"
-                if namespace_class_name.find("cocos2d::Vector") == 0:
-                    return "Array"
-                if namespace_class_name.find("cocos2d::Map") == 0:
-                    return "map_object"
-                if namespace_class_name.find("cocos2d::Point") == 0:
-                    return "point_object"
-                if namespace_class_name.find("cocos2d::Size") == 0:
-                    return "size_object"
-                if namespace_class_name.find("cocos2d::Rect") == 0:
-                    return "rect_object"
-                if namespace_class_name.find("cocos2d::Color3B") == 0:
-                    return "color3b_object"
-                if namespace_class_name.find("cocos2d::Color4B") == 0:
-                    return "color4b_object"
-                if namespace_class_name.find("cocos2d::Color4F") == 0:
-                    return "color4f_object"
-                else:
-                    return namespace_class_name.replace("*", "").replace("const ", "").replace(k, v)
-        return namespace_class_name.replace("*", "").replace("const ", "")
-
-    def lua_typename_from_natve(self, namespace_class_name, is_ret=False):
-        script_ns_dict = self.config['conversions']['ns_map']
-        if namespace_class_name.find("std::") == 0:
-            if namespace_class_name.find("std::string") == 0:
-                return "string"
-            if namespace_class_name.find("std::vector") == 0:
-                return "array_table"
-            if namespace_class_name.find("std::map") == 0 or namespace_class_name.find("std::unordered_map") == 0:
-                return "map_table"
-            if namespace_class_name.find("std::function") == 0:
-                return "function"
-
-        for (k, v) in script_ns_dict.items():
-            if namespace_class_name.find(k) >= 0:
-                if namespace_class_name.find("cocos2d::Vec2") == 0:
-                    return "vec2_table"
-                if namespace_class_name.find("cocos2d::Vec3") == 0:
-                    return "vec3_table"
-                if namespace_class_name.find("cocos2d::Vec4") == 0:
-                    return "vec4_table"
-                if namespace_class_name.find("cocos2d::Vector") == 0:
-                    return "array_table"
-                if namespace_class_name.find("cocos2d::Mat4") == 0:
-                    return "mat4_table"
-                if namespace_class_name.find("cocos2d::Map") == 0:
-                    return "map_table"
-                if namespace_class_name.find("cocos2d::Point") == 0:
-                    return "point_table"
-                if namespace_class_name.find("cocos2d::Size") == 0:
-                    return "size_table"
-                if namespace_class_name.find("cocos2d::Rect") == 0:
-                    return "rect_table"
-                if namespace_class_name.find("cocos2d::Color3B") == 0:
-                    return "color3b_table"
-                if namespace_class_name.find("cocos2d::Color4B") == 0:
-                    return "color4b_table"
-                if namespace_class_name.find("cocos2d::Color4F") == 0:
-                    return "color4f_table"
-                if is_ret == 1:
-                    return namespace_class_name.replace("*", "").replace("const ", "").replace(k, "")
-                else:
-                    return namespace_class_name.replace("*", "").replace("const ", "").replace(k, v)
-        return namespace_class_name.replace("*", "").replace("const ", "")
-
-    def api_param_name_from_native(self, native_name):
-        lower_name = native_name.lower()
-        if lower_name == "std::string" or lower_name == 'string' or lower_name == 'basic_string' or lower_name == 'std::basic_string':
-            return "str"
-
-        if lower_name.find("unsigned ") >= 0:
-            return native_name.replace("unsigned ", "")
-
-        if lower_name.find("unordered_map") >= 0 or lower_name.find("map") >= 0:
-            return "map"
-
-        if lower_name.find("vector") >= 0:
-            return "array"
-
-        if lower_name == "std::function":
-            return "func"
-        else:
-            return lower_name
-
-    def js_ret_name_from_native(self, namespace_class_name, is_enum):
-        if self.is_cocos_class(namespace_class_name):
-            if namespace_class_name.find("cocos2d::Vector") >= 0:
-                return "new Array()"
-            if namespace_class_name.find("cocos2d::Map") >= 0:
-                return "map_object"
-            if is_enum:
-                return 0
-            else:
-                return self.scriptname_cocos_class(namespace_class_name)
-
-        lower_name = namespace_class_name.lower()
-
-        if lower_name.find("unsigned ") >= 0:
-            lower_name = lower_name.replace("unsigned ", "")
-
-        if lower_name == "std::string":
-            return ""
-
-        if lower_name == "char" or lower_name == "short" or lower_name == "int" or lower_name == "float" or lower_name == "double" or lower_name == "long":
-            return 0
-
-        if lower_name == "bool":
-            return "false"
-
-        if lower_name.find("std::vector") >= 0 or lower_name.find("vector") >= 0:
-            return "new Array()"
-
-        if lower_name.find("std::map") >= 0 or lower_name.find("std::unordered_map") >= 0 or lower_name.find(
-                "unordered_map") >= 0 or lower_name.find("map") >= 0:
-            return "map_object"
-
-        if lower_name == "std::function":
-            return "func"
-        else:
-            return namespace_class_name
+    # def should_skip(self, class_name, method_name, verbose=False):
+    #     if class_name == "*" and self.skip_classes.has_key("*"):
+    #         for func in self.skip_classes["*"]:
+    #             if re.match(func, method_name):
+    #                 return True
+    #     else:
+    #         for key in self.skip_classes.iterkeys():
+    #             if key == "*" or re.match("^" + key + "$", class_name):
+    #                 if verbose:
+    #                     print "%s in skip_classes" % (class_name)
+    #                 if len(self.skip_classes[key]) == 1 and self.skip_classes[key][0] == "*":
+    #                     if verbose:
+    #                         print "%s will be skipped completely" % (class_name)
+    #                     return True
+    #                 if method_name != None:
+    #                     for func in self.skip_classes[key]:
+    #                         if re.match(func, method_name):
+    #                             if verbose:
+    #                                 print "%s will skip method %s" % (class_name, method_name)
+    #                             return True
+    #     if verbose:
+    #         print "%s will be accepted (%s, %s)" % (class_name, key, self.skip_classes[key])
+    #     return False
 
 # def main():
 #     from optparse import OptionParser

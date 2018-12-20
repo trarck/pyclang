@@ -5,29 +5,21 @@ opts = {
     'headers': None,
     'replace_headers':None,
     'classes': None,
-    'classes_need_extend':[],
-    'clang_args': [],
-    'target': '',
-    'outdir': '',
+     'clang_args': ["-x","c++","-ID:/c/cocos2d-x/cocos","-ID:/c/cocos2d-x/external/win32-specific/gles/include/OGLES","-ID:/c/cocos2d-x/external/glfw3/include/win32","-D_WINDOWS","-DWIN32","-D_USRDLL"],
     'search_path': '',
-    'remove_prefix': '',
-    'target_ns': '',
     'cpp_ns': None,
-    'classes_have_no_parents': '',
-    'base_classes_to_skip': '',
-    'abstract_classes': '',
     'skip': '',
-    'field': None,
-    'rename_functions': None,
-    'rename_classes':None,
-    'out_file': None,
-    'script_control_cpp':'no',
-    'script_type': None,
     'macro_judgement': None,
     'hpp_headers':  None,
     'cpp_headers': None,
     'win32_clang_flags':  None
 }
 parser = Parser(opts)
-parser.parse_file("data/a.cpp")
-print(parser)
+parser.parse_file("D:\\c\\cocos2d-x\\cocos\\base\\CCController-linux-win32.cpp")
+print("methods:%d,class:%d" %(len(parser.methods),len(parser.parsed_classes)))
+for key,nc in parser.parsed_classes.iteritems():
+    implment_count=0
+    for method in nc.methods:
+        if method.is_implement:
+            implment_count+=1
+    print ("class:%s,files:%d,methods:%d-%d"%(key, len(nc.fields),len(nc.methods),implment_count))

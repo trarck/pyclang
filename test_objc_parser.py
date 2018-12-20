@@ -1,4 +1,4 @@
-from cparser.parser import Parser
+from cparser.objc_parser import ObjcParser
 
 opts = {
     'prefix': '',
@@ -14,7 +14,7 @@ opts = {
     'cpp_headers': None,
     'win32_clang_flags':  None
 }
-parser = Parser(opts)
+parser = ObjcParser(opts)
 parser.parse_file("D:\\c\\cocos2d-x\\cocos\\base\\CCController-linux-win32.cpp")
 print("methods:%d,class:%d" %(len(parser.methods),len(parser.parsed_classes)))
 for key,nc in parser.parsed_classes.iteritems():

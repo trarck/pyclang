@@ -204,8 +204,6 @@ class FieldInfo(object):
         return True
 
 
-
-
 class FunctionAttributes(object):
     Empty = 0
     Private = 1
@@ -246,9 +244,7 @@ class FunctionInfo(object):
 
         for arg in self.cursor.get_arguments():
             self.argumentTips.append(arg.spelling)
-
-        for arg in self.cursor.type.argument_types():
-            nt = TypeInfo.from_type(arg)
+            nt = TypeInfo.from_type(arg.type)
             self.arguments.append(nt)
             # mark the function as not supported if at least one argument is not supported
             if nt.not_supported:
@@ -288,7 +284,9 @@ class FunctionInfo(object):
             self.set_attribute(FunctionAttributes.Const)
 
         # set class name
-        if self.cursor.semantic_parent.kind == cindex.CursorKind.CLASS_DECL:
+        if self.cursor.semantic_parent.kind == cindex.CursorKind.CLASS_DECL \
+                or self.cursor.semantic_parent.kind == cindex.CursorKind.OBJC_INTERFACE_DECL \
+                or self.cursor.semantic_parent.kind == cindex.CursorKind.OBJC_CATEGORY_DECL:
             self.class_name = utils.get_fullname(self.cursor.semantic_parent)
 
         # check have implement
@@ -403,7 +401,6 @@ class ClassInfo(object):
         self.public_fields = []
         self.static_fields = []
         self.methods = []
-        self.static_methods = []
         self.is_abstract = False  # self.class_name in generator.abstract_classes
         self._current_visibility = cindex.AccessSpecifier.PRIVATE
         # for generate lua api doc
@@ -440,17 +437,6 @@ class ClassInfo(object):
             else:
                 if self.generator.should_skip(self.class_name, name):
                     should_skip = True
-            if not should_skip:
-                ret.append({"name": name, "impl": impl})
-        return ret
-
-    def static_methods_clean(self):
-        """
-        clean list of static methods (without the ones that should be skipped)
-        """
-        ret = []
-        for name, impl in self.static_methods.iteritems():
-            should_skip = self.generator.should_skip(self.class_name, name)
             if not should_skip:
                 ret.append({"name": name, "impl": impl})
         return ret
@@ -517,16 +503,8 @@ class ClassInfo(object):
             m = FunctionInfo(cursor)
             m.set_attribute(FunctionAttributes.Destructor)
             self.methods.append(m)
-        # objc desc
-        elif cursor.kind == cindex.CursorKind.OBJC_IVAR_DECL:
-            self.fields.append(FieldInfo(cursor))
-        elif cursor.kind == cindex.CursorKind.OBJC_INSTANCE_METHOD_DECL:
-            m = FunctionInfo(cursor)
-            self.methods.append(m)
-        elif cursor.kind == cindex.CursorKind.OBJC_PROPERTY_DECL:
-            print("do nothing OBJC_PROPERTY_DECL")
-        else:
-            print "unknown cursor: %s - %s" % (cursor.kind, cursor.displayname)
+        # else:
+        #     print "unknown cursor: %s - %s" % (cursor.kind, cursor.displayname)
 
     @staticmethod
     def _is_method_in_parents(current_class, method_name):
@@ -556,3 +534,43 @@ class NamespaceInfo(object):
     def __init__(self, cursor):
         self.cursor = cursor
 
+
+class ObjcProperty(object):
+    def __init__(self, cursor):
+        self.cursor = cursor
+        self.name = cursor.displayname
+        self.kind = cursor.type.kind
+        self.location = cursor.location
+
+        self.signature_name = self.name
+        self.field_type = TypeInfo.from_type(cursor.type)
+
+
+class ObjcClassInfo(ClassInfo):
+    def __init__(self, cursor):
+        self.properties = []
+        self.is_category = False
+        self.associated_class = None
+        self.associated_class_displayname = None
+        super(ObjcClassInfo, self).__init__(cursor)
+
+    def _traverse(self, cursor=None, depth=0):
+        super(ObjcClassInfo, self)._traverse(cursor, depth)
+        # objc desc
+        if cursor.kind == cindex.CursorKind.OBJC_IVAR_DECL:
+            self.fields.append(FieldInfo(cursor))
+        elif cursor.kind == cindex.CursorKind.OBJC_INSTANCE_METHOD_DECL:
+            m = FunctionInfo(cursor)
+            self.methods.append(m)
+        elif cursor.kind == cindex.CursorKind.OBJC_CLASS_METHOD_DECL:
+            m = FunctionInfo(cursor)
+            m.set_attribute(FunctionAttributes.Static)
+            self.methods.append(m)
+        elif cursor.kind == cindex.CursorKind.OBJC_PROPERTY_DECL:
+            print("do nothing OBJC_PROPERTY_DECL")
+            p = ObjcProperty(cursor)
+            self.properties.append(p)
+        elif cursor.kind == cindex.CursorKind.OBJC_CLASS_REF:
+            self.associated_class_displayname = cursor.displayname
+        else:
+            print "unknown cursor: %s - %s" % (cursor.kind, cursor.displayname)

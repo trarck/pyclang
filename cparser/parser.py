@@ -140,17 +140,18 @@ class Parser(object):
             self.methods.append(method)
         elif cursor.kind == cindex.CursorKind.OBJC_INTERFACE_DECL:
             print("find OBJC_INTERFACE_DECL")
-        elif cursor.kind == cindex.CursorKind.OBJC_IVAR_DECL:
-            print("find OBJC_IVAR_DECL")
-
+            if not self.parsed_classes.has_key(cursor.displayname):
+                objc_class = ObjcClassInfo(cursor)
+                self.parsed_classes[cursor.displayname] = objc_class
         elif cursor.kind == cindex.CursorKind.OBJC_CATEGORY_DECL:
             print("find OBJC_CATEGORY_DECL")
-            for sub_cursor in cursor.get_children():
-                self._traverse(sub_cursor)
-        elif cursor.kind == cindex.CursorKind.OBJC_CLASS_REF:
-            print("find OBJC_CLASS_REF")
-        elif cursor.kind == cindex.CursorKind.OBJC_IMPLEMENTATION_DECL:
-            print("find OBJC_IMPLEMENTATION_DECL")
+            if not self.parsed_classes.has_key(cursor.displayname):
+                objc_class = ObjcClassInfo(cursor)
+                objc_class.associated_class = self.parsed_classes[objc_class.associated_class_displayname]
+                self.parsed_classes[cursor.displayname] = objc_class
+        elif cursor.kind == cindex.CursorKind.OBJC_IMPLEMENTATION_DECL \
+                or cursor.kind == cindex.CursorKind.OBJC_CATEGORY_IMPL_DECL:
+            # parse implementation directly
             for sub_cursor in cursor.get_children():
                 self._traverse(sub_cursor)
         elif cursor.kind == cindex.CursorKind.OBJC_INSTANCE_METHOD_DECL:

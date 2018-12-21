@@ -1,11 +1,11 @@
-from cparser.objc_parser import ObjcParser
+from cparser.parser import Parser
 
 opts = {
     'prefix': '',
     'headers': None,
     'replace_headers':None,
     'classes': None,
-     'clang_args': ["-x","c++","-ID:/c/cocos2d-x/cocos","-ID:/c/cocos2d-x/external/win32-specific/gles/include/OGLES","-ID:/c/cocos2d-x/external/glfw3/include/win32","-D_WINDOWS","-DWIN32","-D_USRDLL"],
+     'clang_args': [],
     'search_path': '',
     'cpp_ns': None,
     'skip': '',
@@ -14,8 +14,8 @@ opts = {
     'cpp_headers': None,
     'win32_clang_flags':  None
 }
-parser = ObjcParser(opts)
-parser.parse_file("D:\\c\\cocos2d-x\\cocos\\base\\CCController-linux-win32.cpp")
+parser = Parser(opts)
+parser.parse_file("data/e.m")
 print("methods:%d,class:%d" %(len(parser.methods),len(parser.parsed_classes)))
 for key,nc in parser.parsed_classes.iteritems():
     implment_count=0

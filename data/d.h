@@ -5,9 +5,10 @@
     NSInteger _myi;
     float _myf;
 }
+
 - (void)preStartUnity:(NSInteger) x aa:(float) y bb:(NSString*) str;
 // override it to add your render plugin delegate
-- (void)shouldAttachRenderDelegate;
+- (void)shouldAttachRenderDelegate();
 
 // this one is called at the very end of didFinishLaunchingWithOptions:
 // after views have been created but before initing engine itself
